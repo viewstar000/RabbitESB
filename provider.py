@@ -46,34 +46,45 @@ PROVIDER_LIST   = {}
 
 @defer.inlineCallbacks
 def init_providers(connection):
+    u"""
+    初始化服务提供者实例
+
+    服务提供者为一个标准PYTHON CLASS，并使用修饰器ServiceProvider注册为服务提供者。
+
+    connection : instance of RabbitMQ Connection
+    """
 
     for provider_class in PROVIDER_LIST.itervalues():
 
         log.info('Register %s' % (provider_class))
-        service_name        = provider_class.__service_name__
-        provider_name       = provider_class.__provider_name__
+        service_name        = provider_class.__service_name__   # 由ServiceProvider设置
+        provider_name       = provider_class.__provider_name__  # 由ServiceProvider设置
         provider_instance   = provider_class()
 
         channel = yield connection.channel()
-        yield channel.exchange_declare(exchange='Service' + service_name, type='topic', durable=True)
-        yield channel.queue_declare(queue='Provider' + provider_name, durable=True)
-        yield channel.queue_bind(exchange='Service' + service_name, queue='Provider' + provider_name, routing_key='Services.'+service_name+'.'+provider_name+'.#')
+        yield channel.exchange_declare(exchange='Service' + service_name, type='topic', durable=True)   # 声明一个TOPIC类型的Exchange，用于绑定当前服务的Topic
+        yield channel.queue_declare(queue='Provider' + provider_name, durable=True)                     # 声明一个生产消费队列，当前提供者的所有实际都是该队列的消费者
+        yield channel.queue_bind(exchange='Service' + service_name, queue='Provider' + provider_name, routing_key='Services.'+service_name+'.'+provider_name+'.#')  # 将队列绑定到当前服务的主题上
         yield channel.basic_qos(prefetch_count=1)
 
+        # 遍历当胶服务提供者的事件响应器
         for name, attr in provider_class.__dict__.iteritems():
             if callable(attr) and hasattr(attr, 'slots') and attr.slots:
                 for (model_name, signal_name) in attr.slots:
                     log.info('RegisterSignalSlot: %s.%s -> %s' % (model_name, signal_name, attr))
-                    yield channel.exchange_declare(exchange='ServiceModel' + model_name, type='topic', durable=True)
-                    yield channel.queue_bind(exchange='ServiceModel' + model_name, queue='Provider' + provider_name, routing_key='Signals.'+model_name+'.'+signal_name)
-                    yield channel.queue_bind(exchange='ServiceModel' + model_name, queue='Provider' + provider_name, routing_key='Signals.'+model_name+'.'+signal_name+'.'+provider_name)
+                    yield channel.exchange_declare(exchange='ServiceModel' + model_name, type='topic', durable=True)    # 声明一个TOPIC类型的Exchange，用于绑定该分类下的事件队列
+                    yield channel.queue_bind(exchange='ServiceModel' + model_name, queue='Provider' + provider_name, routing_key='Signals.'+model_name+'.'+signal_name)                     # 将当前服务的队列与事件主题绑定
+                    yield channel.queue_bind(exchange='ServiceModel' + model_name, queue='Provider' + provider_name, routing_key='Signals.'+model_name+'.'+signal_name+'.'+provider_name)   # 在绑定的主题中增加提供者的ID，用于事件发送方指定接收者
 
-        queue_object, consumer_tag = yield channel.basic_consume(queue='Provider' + provider_name, no_ack=True)
+        queue_object, consumer_tag = yield channel.basic_consume(queue='Provider' + provider_name, no_ack=True) # 在当前服务的队列上创建消费者
         l = task.LoopingCall(ServiceCallback(provider_instance), queue_object)
         l.start(0)
         
 
 def ServiceProvider(service = None):
+    u"""
+    服务提供者修饰器，用于将一个PYTHON类注册为一个服务提供者
+    """
 
     def wrap(provider_class):
         if not service:
@@ -96,6 +107,9 @@ def ServiceProvider(service = None):
 
 
 def signal_slot(signal):
+    u"""
+    注册事件接收器
+    """
 
     def wrap(slot):
 
@@ -114,6 +128,9 @@ def signal_slot(signal):
 
 
 def pass_raw(func):
+    u"""
+    声明当前API采用RAW模式调用
+    """
 
     func.pass_raw = True
 
@@ -121,6 +138,9 @@ def pass_raw(func):
 
 
 class ServiceCallback(object):
+    u"""
+    服务回调，对应当前服务提供者实例在服务队列上的消费者
+    """
 
     log = Logger()
 
@@ -137,7 +157,7 @@ class ServiceCallback(object):
     def __call__(self, queue_object):
 
         self.log.info('ServiceCallback: wait for new message ...')
-        channel, method, properties, body = yield queue_object.get()
+        channel, method, properties, body = yield queue_object.get()    # 从队列里读取消息
 
         self.log.info('ServiceCallback: Recv Message %s' % (properties.headers,))
         result      = ''
@@ -147,9 +167,11 @@ class ServiceCallback(object):
         if self.provider.__provider_name__ in params.excludes:
             return
         try:
-            if len(routing_key) >= 4 and routing_key[0] == 'Services':
+            if len(routing_key) >= 4 and routing_key[0] == 'Services':  
+                # 处理RPC调用
                 res_params, result = yield self.api_callback(routing_key, params, body)
-            elif len(routing_key) >= 3 and routing_key[0] == 'Signals':
+            elif len(routing_key) >= 3 and routing_key[0] == 'Signals': 
+                # 处理事件响应
                 res_params, result = yield self.signal_callback(routing_key, params, body)
             else:
                 raise RuntimeError('UnknownRoutingKey: %s' % (params.routing_key,))
@@ -166,10 +188,12 @@ class ServiceCallback(object):
         res_params.correlation_id = params.correlation_id
 
         if params.reply_to:
+            # 调用方为同步模式，将结果能过Exclusive Queue返回给调用方
             proxy = ServiceReplyProxy()
             yield proxy(params.reply_to, params.routing_key, params.correlation_id, res_params, result)
 
         if params.callback:
+            # 调用方为异步模式，且提供了callback参数，将结果发送到相应的callback
             routing_key                 = params.callback.split('.')
             res_params.wait_response    = False
             res_params.routing_key      = params.callback
@@ -187,6 +211,9 @@ class ServiceCallback(object):
 
     @defer.inlineCallbacks
     def api_callback(self, routing_key, params, body):
+        u"""
+        处理RPC调用，将调用映射到provider实例的方法上
+        """
 
         result          = ''
         service_name    = routing_key[1]
@@ -210,6 +237,9 @@ class ServiceCallback(object):
 
     @defer.inlineCallbacks
     def signal_callback(self, routing_key, params, body):
+        u"""
+        处理事件响应，将事件转到provider实例的对应方法上
+        """
 
         result      = ''
         model_name  = routing_key[1]

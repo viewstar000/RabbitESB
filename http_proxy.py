@@ -23,6 +23,11 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-----------------
+
+为服务调用方提供一套标准的HTTP协议代理
+
 '''
 
 from twisted.web import server, resource, static
@@ -101,6 +106,8 @@ class RootResource(resource.Resource):
 
 class ServiceResource(resource.Resource):
     """
+    调用服务API
+
         POST http://host:port/Services/ServiceName/ServiceProviderName/ApiName?extra_params=XXXX
              BODY: {'arg1':'xxx', 'arg2':'eeee'}
         or
@@ -120,6 +127,8 @@ class ServiceResource(resource.Resource):
 
 class SignalResource(resource.Resource):
     """
+    触发事件
+
         POST http://host:port/Signals/ModelName/SignalName?extra_params=XXXX
              BODY: {'arg1':'xxx', 'arg2':'eeee'}
         or
@@ -139,6 +148,8 @@ class SignalResource(resource.Resource):
 
 class ReplyResource(resource.Resource):
     """
+    回调代理，发送应答
+
         POST http://host:port/Reply/reply_to/routing_key/correlation_id?extra_params=XXXX
              BODY: {'arg1':'xxx', 'arg2':'eeee'}
         or
